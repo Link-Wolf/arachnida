@@ -1,0 +1,262 @@
+#!node
+const DomParser = require('dom-parser');
+const parser = new DomParser();
+const fs = require('fs');
+const fetch = require('node-fetch');
+
+let options = {
+    recursive: false,
+    recursive_level: 5,
+    path_to_save: './data',
+    url: undefined
+};
+
+visited = [];
+
+const parseOptions = () => {
+    for (let i = 2; i < process.argv.length; i++)
+    {
+        let arg = process.argv[i];
+        if (arg[0] === '-')
+        {
+            for (c of (arg = arg.slice(1)))
+            {
+                switch (c)
+                {
+                    case 'r':
+                        options.recursive = true;
+                        break;
+                    case 'l':
+                        options.recursive_level = parseInt(process.argv[++i]);
+                        break;
+                    case 'p':
+                        options.path_to_save = process.argv[++i];
+                        break;
+                    default:
+                        console.log('Usage: spider [-r] [-l level] [-p path] url');
+                        process.exit(1);
+                }
+            }
+        }
+        else
+        {
+            options.url = arg;
+            break;
+        }
+    }
+    if (
+        options.url === undefined ||
+        options.path_to_save === undefined ||
+        options.recursive_level === NaN
+    )
+    {
+        console.log('Usage: spider [-r] [-l level] [-p path] url');
+        process.exit(1);
+    }
+    return options;
+}
+
+//find and store all links on a page, contained in <a> tags and behind href attribute
+const findLinks = async (url, html) => {
+    if (visited.includes(url))
+        return [];
+    console.log(`Visiting ${url}`);
+    visited.push(url);
+    const doc = await parser.parseFromString(html, 'text/html');
+
+    let links = Array.from(doc.getElementsByTagName('a')).map(a => a.getAttribute('href'));
+
+    let ret = [];
+    for (let i = 0; i < links.length; i++)  
+    {
+        if (links[i] && links[i] !== undefined && links[i][0])
+        {
+            if(links[i][0] === '/')
+                ret.push(options.url + links[i]);
+            else if (links[i].startsWith(url))
+                ret.push(links[i]);
+            else if (!links[i].startsWith('http') && !links[i].startsWith('#'))
+                ret.push(url + links[i]);
+        }
+    }
+    return ret;
+}
+
+const getImages = async (links) => {
+    console.log('Getting images...');
+    let images_url = [];
+    for (let link of links)
+    {
+        let image_url;
+        if (fs.existsSync(link))
+        {
+            image_url = ((html) => {
+                const doc = parser.parseFromString(html, 'text/html');
+
+                const baseUrl = `file://${options.url}`;
+              
+                // Sélectionnez les balises <img> pour extraire les liens des images
+                const imageElements = doc.getElementsByTagName('img');
+                const imageLinks = Array.from(imageElements).map(element => {
+                  const imageUrl = element.getAttribute('src');
+                  const absoluteUrl = new URL(imageUrl, baseUrl).href;
+                  return absoluteUrl;
+                });
+
+               
+                let my_images = [];
+                for (image of imageLinks)
+                {
+                    let ext = image.split('.').pop();
+                    if (ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif' || ext === 'bmp')
+                       my_images.push(image)
+                }
+                return my_images;
+            })(fs.readFileSync(link, 'utf8'))
+        }
+        else
+        {
+            image_url = await fetch(link, {redirect: 'follow'}).then((response) => {
+                if (!response.ok)
+                    throw new Error('Network response was not ok');
+                return response.text();
+            }).then((html) => {
+                const doc = parser.parseFromString(html, 'text/html');
+                //get all images on page
+                doc_images = doc.getElementsByTagName('img');
+
+                const imageLinks = Array.from(doc_images).map(element => {
+                    const imageUrl = element.getAttribute('src');
+                    const absoluteUrl = new URL(imageUrl, options.url).href;
+                    return absoluteUrl;
+                  });
+
+
+
+
+
+                // console.log(doc_images)
+                let my_images = [];
+                for (image of imageLinks)
+                {
+                    let ext = image.split('.').pop();
+                    if (ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif' || ext === 'bmp')
+                       my_images.push(image)
+                }
+                return my_images;
+            }).catch((err) => {
+                // console.log(err)
+            })
+        }
+        if (image_url !== undefined)
+        {
+            for (let image of image_url)
+            {
+                if (image[0] === '/')
+                    image = options.url + image;
+                images_url.push(image);
+            }
+        }
+    }
+    return images_url;
+}
+
+const saveImages = async (images, path) => {
+    const fs = require('fs');
+
+    if (!fs.existsSync(path))
+        fs.mkdirSync(path);
+
+    for (let image of images)
+    {
+        //download image
+        if (image.startsWith('http://') || image.startsWith('https://'))
+        {
+            image = image.replace('https://wordpress', 'https://www');
+            let image_data = await fetch(image, {redirect: 'follow'}).then((response) => {
+                if (!response.ok)
+                    throw new Error(`Network response was not ok : ${response.status}`);
+                return response.blob();
+            }
+            ).catch((err) => {})
+            if (image_data === undefined)
+                continue;
+            let data_tmp = await image_data.arrayBuffer();
+            let data = await Buffer.from(data_tmp)
+
+            //get image name
+            let image_name = image.split('/').pop();
+
+            //save buffer with image name on path
+            fs.writeFile(path + '/' + image_name, data, (err) => {
+                if (err) throw err;
+            });
+        }
+        else {
+            if (fs.existsSync(image.substring(7)))
+            {
+                let image_name = image.substring(7).split('/').pop();
+                fs.copyFile(image.substring(7), path + '/' + image_name, (err) => {
+                    if (err) throw err;
+                });
+            }
+        }
+    }
+}
+
+const main = async () => {
+    let options = parseOptions();
+
+    let overall_url_set = new Set();
+    if (options.recursive)
+    {
+        let current_url_set = new Set();
+        let next_url_set = new Set();
+
+        current_url_set.add(options.url);
+
+        while (options.recursive_level--)
+        {
+            for (let url of current_url_set)
+            {
+                let links;
+                if (fs.existsSync(url))
+                {
+                    file = fs.readFileSync(url, 'utf8')
+                    links = await findLinks(url, file);
+                }
+                else {
+                    links = await fetch(url, {redirect: 'follow'}).then((response) => {
+                        if (!response.ok)
+                            throw new Error('Network response was not ok');
+                        return response.text();
+                    }).then((html) => {
+                        return findLinks(url, html);
+                    }).catch((err) => {
+                        // console.log(err)
+                    })
+                }
+                if (links === undefined)
+                    continue;
+               next_url_set = new Set([...next_url_set, ...links]);
+
+                // console.log(next_url_set)
+
+                overall_url_set.add(url); 
+            }
+            // console.log(next_url_set)
+            current_url_set = next_url_set;
+            next_url_set = new Set();
+        }
+        overall_url_set = new Set([...overall_url_set, ...current_url_set])
+    }
+    else
+    {
+        overall_url_set.add(options.url);
+    }
+    let images = new Set(await getImages(overall_url_set));
+    await saveImages(images, options.path_to_save);
+    console.log('Done!');
+}
+
+main();

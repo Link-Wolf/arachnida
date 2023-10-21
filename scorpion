@@ -1,0 +1,527 @@
+#!node
+
+const fs = require('fs');
+const { off } = require('process');
+
+const supported_tags = require('./exif_tags');
+
+const parse_metadata = async (path) => {
+	const file = fs.readFileSync(path);
+	const stats = fs.statSync(path);
+	metadata = {
+		"path": path,
+		"size": stats.size,
+		"created": stats.birthtime,
+		"modified": stats.mtime,
+	};
+	console.log("\n " + metadata.path.split("/").pop() + "\n┌" + "─".repeat((metadata.path.split("/").pop()).length + 1));
+	if (file.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47])))//PNG magic number
+		await extract_metadata_png(file, metadata);
+	else if (file.subarray(0, 4).equals(Buffer.from([0xFF, 0xD8, 0xFF, 0xE0])))///JPG magic number
+        extract_metadata_jpg(file, metadata);
+	else if (file.subarray(0, 4).equals(Buffer.from([0x47, 0x49, 0x46, 0x38])))//GIF magic number
+        await extract_metadata_gif(file, metadata);
+	else if (file.subarray(0, 2).equals(Buffer.from([0x42, 0x4D])))//BMP magic number
+        await extract_metadata_bmp(file, metadata);
+	else
+		console.log("No such file format");
+}
+
+const print_metadata = (file, metadata) => {
+
+	let i = 0;
+    for (let key in metadata)
+    {
+		if (i === Object.keys(metadata).length - 1)
+			console.log("└> " + key + ": " , metadata[key]);
+		else
+        	console.log("├> " + key + ": " , metadata[key]);
+		i++;
+    }
+}
+
+const extract_metadata_bmp = async (file, metadata) => {
+    metadata.fileSize = file.readUInt32LE(2); // Taille totale du fichier (4 octets)
+    metadata.width = file.readUInt32LE(18); // Largeur de l'image en pixels (4 octets)
+    metadata.height = file.readUInt32LE(22); // Hauteur de l'image en pixels (4 octets)
+    metadata.bitsPerPixel = file.readUInt16LE(28); // Nombre de bits par pixel (2 octets)
+
+    print_metadata(file, metadata);
+}
+
+const extract_metadata_png = async (file, metadata) => {
+	let offset = 8; // Début du premier chunk après l'en-tête
+
+	while (offset < file.length) {
+		const chunkLength = file.readUInt32BE(offset); // Longueur du chunk (4 octets)
+		const chunkType = file.toString('ascii', offset + 4, offset + 8); // Type du chunk (4 octets)
+		const chunkData = file.slice(offset + 8, offset + 8 + chunkLength); // Données du chunk
+
+		// Traitez les données du chunk selon vos besoins
+		if (chunkType == 'tEXt')
+		{
+            const nullTerminatorIndex = chunkData.indexOf(0); // Trouver l'index du caractère de terminaison nul
+            const key = chunkData.slice(0, nullTerminatorIndex).toString('ascii'); // Extraire la clé en tant que chaîne ASCII
+            const value = chunkData.slice(nullTerminatorIndex + 1).toString('utf8'); // Extraire la valeur en tant que chaîne UTF-8
+
+            metadata[key] = value;
+        }
+		else if (chunkType === 'eXIf') {
+			// Extract the byte order from the TIFF header
+			const byteOrder = chunkData.toString('ascii', 0, 2);
+			const isLittleEndian = byteOrder === 'II';
+
+			const read16 = isLittleEndian ?
+				chunkData.readUInt16LE.bind(chunkData) :
+				chunkData.readUInt16BE.bind(chunkData);
+			const read32 = isLittleEndian ?
+				chunkData.readUInt32LE.bind(chunkData) :
+				chunkData.readUInt32BE.bind(chunkData);
+
+			let exif_offset = read32(4);
+			let numEntries = read16(exif_offset);
+		
+			exif_offset += 2 // Skip the numEntries field
+
+			// Process the IFD entries
+			for (let i = 0; i < numEntries; i++) {
+				tag = read16(exif_offset);
+				type = read16(exif_offset + 2);
+				count = read32(exif_offset + 4);
+				value_offset = read32(exif_offset + 8);
+
+				if (supported_tags.some((supported_tag) => supported_tag.value === tag))
+				{
+					metadata[supported_tags.find((supported_tag) => supported_tag.value === tag).name] = (
+						(
+							type, count, value_offset
+						) => {
+							switch (type) {
+								case 1: // BYTE
+									return chunkData.readUInt8(exif_offset + 8);
+								case 2: // ASCII
+									if (count > 4)
+										return chunkData.toString('ascii', value_offset, value_offset + count);
+									else
+										return chunkData.toString('ascii', exif_offset + 8, exif_offset + 8 + count);
+								case 3: // SHORT
+									return read16(exif_offset + 8);
+								case 4: // LONG
+									return read32(exif_offset + 8);
+								case 5: // RATIONAL
+									return read32(value_offset) / read32(value_offset + 4);
+								case 7: // UNDEFINED
+									if (count > 1)
+										return chunkData.slice(value_offset, value_offset + count);
+									else
+										return chunkData.slice(exif_offset + 8, exif_offset + 8 + count);
+								case 9: // SLONG
+									return read32(exif_offset + 8);
+								case 10: // SRATIONAL
+									return read32(value_offset) / read32(value_offset + 4);
+								default:
+									throw new Error(`Unsupported TIFF data type ID: ${type}`);
+							}
+						}
+					)(type, count, value_offset)
+				}
+				else if (tag === 34665) // EXIF IFD Pointer
+				{
+					local_offset = value_offset;
+					numEntries = read16(local_offset);
+					local_offset += 2;
+
+					for (let j = 0; j < numEntries; j++) {
+						tag = read16(local_offset);
+						type = read16(local_offset + 2);
+						count = read32(local_offset + 4);
+						value_offset = read32(local_offset + 8);
+
+						if (supported_tags.some((supported_tag) => supported_tag.value === tag))
+						{
+							metadata[supported_tags.find((supported_tag) => supported_tag.value === tag).name] = (
+								(
+									type, count, value_offset
+								) => {
+									switch (type) {
+										case 1: // BYTE
+											return chunkData.readUInt8(local_offset + 8);
+										case 2: // ASCII
+											if (count > 4)
+												return chunkData.toString('ascii', value_offset, value_offset + count);
+											else
+												return chunkData.toString('ascii', local_offset + 8, local_offset + 8 + count);
+										case 3: // SHORT
+											return read16(local_offset + 8);
+										case 4: // LONG
+											return read32(local_offset + 8);
+										case 5: // RATIONAL
+											return read32(value_offset) / read32(value_offset + 4);
+										case 7: // UNDEFINED
+											if (count > 1)
+												return chunkData.slice(value_offset, value_offset + count);
+											else
+												return chunkData.slice(local_offset + 8, local_offset + 8 + count);
+										case 9: // SLONG
+											return read32(local_offset + 8);
+										case 10: // SRATIONAL
+											return read32(value_offset) / read32(value_offset + 4);
+										default:
+											throw new Error(`Unsupported TIFF data type ID: ${type}`);
+									}
+								}
+							)(type, count, value_offset)
+						}
+						local_offset += 12;
+					}
+				}
+				exif_offset += 12;
+			}
+		}
+		offset += 12 + chunkLength; // Déplacer l'offset au prochain chunk
+	}
+	print_metadata(file, metadata);
+}
+
+const extract_metadata_jpg = async (file, metadata) => {
+    let offset = 2; // Début du premier segment après le marqueur SOI (Start of Image)
+	while (file.readUInt16BE(offset) !== 0xFFD9) //End of Image
+	{
+		let marker = file.readUInt16BE(offset);
+		if ((marker & 0xFF00) !== 0xFF00)
+			break;
+		offset += 2;
+		let length = file.readUInt16BE(offset);
+
+		if (marker === 0xFFE0) // APP0
+		{
+			let version = file.toString('ascii', offset + 2, offset + 6)
+				+ ' v' + file.readUInt8(offset + 7)
+				+ '.' + file.readUInt8(offset + 8).toString().padStart(2, '0');
+			let densityUnit = file.readUInt8(offset + 9);
+			let xDensity = file.readUInt16BE(offset + 10);
+			let yDensity = file.readUInt16BE(offset + 12);
+			let thumbWidth = file.readUInt8(offset + 14);
+			let thumbHeight = file.readUInt8(offset + 15);
+			
+			metadata = {...metadata,
+				version:version,
+				densityUnit:densityUnit,
+				xDensity:xDensity,
+				yDensity:yDensity,
+				thumbWidth:thumbWidth,
+				thumbHeight:thumbHeight
+			};
+		}
+		else if (marker === 0xFFE1) // APP1
+		{
+			let chunkData = file.slice(offset + 8, offset + 8 + length);
+			const byteOrder = chunkData.toString('ascii', 0, 2);
+			const isLittleEndian = byteOrder === 'II';
+
+			const read16 = isLittleEndian ?
+				chunkData.readUInt16LE.bind(chunkData) :
+				chunkData.readUInt16BE.bind(chunkData);
+			const read32 = isLittleEndian ?
+				chunkData.readUInt32LE.bind(chunkData) :
+				chunkData.readUInt32BE.bind(chunkData);
+
+			let exif_offset = read32(4);
+			let numEntries;
+			try {
+				numEntries = read16(exif_offset);
+			}
+			catch (e) {
+				offset += length;
+				continue;
+			}	
+		
+			exif_offset += 2 // Skip the numEntries field
+
+			// Process the IFD entries
+			for (let i = 0; i < numEntries; i++) {
+				tag = read16(exif_offset);
+				type = read16(exif_offset + 2);
+				count = read32(exif_offset + 4);
+				value_offset = read32(exif_offset + 8);
+
+				if (supported_tags.some((supported_tag) => supported_tag.value === tag))
+				{
+					metadata[supported_tags.find((supported_tag) => supported_tag.value === tag).name] = (
+						(
+							type, count, value_offset
+						) => {
+							switch (type) {
+								case 1: // BYTE
+									return chunkData.readUInt8(exif_offset + 8);
+								case 2: // ASCII
+									if (count > 4)
+										return chunkData.toString('ascii', value_offset, value_offset + count);
+									else
+										return chunkData.toString('ascii', exif_offset + 8, exif_offset + 8 + count);
+								case 3: // SHORT
+									return read16(exif_offset + 8);
+								case 4: // LONG
+									return read32(exif_offset + 8);
+								case 5: // RATIONAL
+									return read32(value_offset) / read32(value_offset + 4);
+								case 7: // UNDEFINED
+									if (count > 1)
+										return chunkData.slice(value_offset, value_offset + count);
+									else
+										return chunkData.slice(exif_offset + 8, exif_offset + 8 + count);
+								case 9: // SLONG
+									return read32(exif_offset + 8);
+								case 10: // SRATIONAL
+									return read32(value_offset) / read32(value_offset + 4);
+								default:
+									throw new Error(`Unsupported TIFF data type ID: ${type}`);
+							}
+						}
+					)(type, count, value_offset)
+				}
+				else if (tag === 34665) // EXIF IFD Pointer
+				{
+					local_offset = value_offset;
+					numEntries = read16(local_offset);
+					local_offset += 2;
+
+					for (let j = 0; j < numEntries; j++) {
+						tag = read16(local_offset);
+						type = read16(local_offset + 2);
+						count = read32(local_offset + 4);
+						value_offset = read32(local_offset + 8);
+
+						if (supported_tags.some((supported_tag) => supported_tag.value === tag))
+						{
+							metadata[supported_tags.find((supported_tag) => supported_tag.value === tag).name] = (
+								(
+									type, count, value_offset
+								) => {
+									switch (type) {
+										case 1: // BYTE
+											return chunkData.readUInt8(local_offset + 8);
+										case 2: // ASCII
+											if (count > 4)
+												return chunkData.toString('ascii', value_offset, value_offset + count);
+											else
+												return chunkData.toString('ascii', local_offset + 8, local_offset + 8 + count);
+										case 3: // SHORT
+											return read16(local_offset + 8);
+										case 4: // LONG
+											return read32(local_offset + 8);
+										case 5: // RATIONAL
+											return read32(value_offset) / read32(value_offset + 4);
+										case 7: // UNDEFINED
+											if (count > 1)
+												return chunkData.slice(value_offset, value_offset + count);
+											else
+												return chunkData.slice(local_offset + 8, local_offset + 8 + count);
+										case 9: // SLONG
+											return read32(local_offset + 8);
+										case 10: // SRATIONAL
+											return read32(value_offset) / read32(value_offset + 4);
+										default:
+											throw new Error(`Unsupported TIFF data type ID: ${type}`);
+									}
+								}
+							)(type, count, value_offset)
+						}
+						local_offset += 12;
+					}
+				}
+				exif_offset += 12;
+			}
+		}
+		offset += length;
+	}
+    print_metadata(file, metadata);
+}
+
+const extract_metadata_gif = async (file, metadata) => {
+   	const decodeHeader = (file) => {
+		const gifVersion = file.toString('ascii', 0, 6);
+		const logicalScreenWidth = file.readUInt16LE(6);
+		const logicalScreenHeight = file.readUInt16LE(8);
+
+		return {
+			version: gifVersion,
+			width: logicalScreenWidth,
+			height: logicalScreenHeight,
+		}
+	}
+
+	const decodeLogicalScreenDescriptor = (file) => {
+		const packedField = file.readUInt8(10);
+		const hasGlobalColorTable = !!(packedField & 0b10000000);
+		const colorResolution = ((packedField & 0b01110000) >> 4) + 1; // bit/pixel
+		const sortFlag = !!(packedField & 0b00001000);
+		const globalColorTableSize = 2 ** colorResolution; // 2^(N+1)
+		const backgroundColorIndex = file.readUInt8(11);
+		const pixelAspectRatio = file.readUInt8(12);
+
+		return {
+			hasColorTable: hasGlobalColorTable,
+			...(hasGlobalColorTable ? {
+				colorResolution: colorResolution,
+				isSorted: sortFlag,
+				globalColorTableSize: globalColorTableSize
+			} : {}),
+			backgroundColorIndex: backgroundColorIndex,
+			// pixelAspectRatio: pixelAspectRatio,
+		}
+	}
+	
+	const decodeGraphicControlExtension = (file, offset) => {
+		const packedField = file.readUInt8(offset + 3);
+		const disposalMethod = (packedField & 0b00011100) >> 2;
+		const userInputFlag = !!(packedField & 0b00000010);
+		const transparentColorFlag = !!(packedField & 0b00000001);
+		const delayTime = file.readUInt16LE(offset + 4);
+		const transparentColorIndex = file.readUInt8(offset + 6);
+
+		return {
+			metadata: {
+				delayTime: delayTime,
+				transparentColorIndex: transparentColorIndex,
+				transparentColorFlag: transparentColorFlag,
+				userInputFlag: userInputFlag,
+				disposalMethod: disposalMethod,
+			},
+			offset: offset + 8,
+		}
+	}
+
+	const decodeCommentExtentions = (file, offset) => {
+
+		let comments = []
+		let local_offset = offset + 2;
+		while (file.readUInt8(local_offset) !== 0x00)
+		{
+			const commentLength = file.readUInt8(local_offset);
+			const comment = file.toString('ascii', local_offset + 1, local_offset + 1 + commentLength);
+			comments.push(comment);
+			local_offset += 1 + commentLength;
+		}
+		
+		return {
+			metadata: {
+				comments: comments,
+			},
+			offset: local_offset + 1,
+		}
+	}
+
+	const decodePlainTextExtension = (file, offset) => {
+		return {
+			metadata: {},
+			offset: offset + 3 + file.readUInt8(offset + 2),
+		}		
+	}
+
+	const decodeApplicationExtension = (file, offset) => {
+	return {
+			metadata: {},
+			offset: offset + 19
+		}
+	}
+
+	const decodeImageDescriptor = (file, offset) => {
+		let left_shift = file.readUInt16LE(offset + 1);
+		let top_shift = file.readUInt16LE(offset + 3);
+		let width = file.readUInt16LE(offset + 5);
+		let height = file.readUInt16LE(offset + 7);
+		let packedField = file.readUInt8(offset + 9);
+		let hasLocalColorTable = !!(packedField & 0b10000000);
+		let isInterlaced = !!(packedField & 0b01000000);
+		let isSorted = !!(packedField & 0b00100000);
+		let localColorTableSize = 2 ** ((packedField & 0b00000111) + 1);
+		offset += 10; // Skip the Image Descriptor Header
+
+		if (hasLocalColorTable)
+			offset += localColorTableSize * 3; // Skip the Local Color Table
+		
+		offset++; // Skip the LZW Minimum Code Size
+		while (file.readUInt8(offset) !== 0x00)
+		{
+			let blockSize = file.readUInt8(offset);
+			offset += blockSize + 1;
+			// console.log(blockSize);
+		}
+		
+		return {
+			metadata: {},
+			offset: offset + 1,
+		}
+	}
+
+	metadata = {...metadata, ...decodeHeader(file)};
+	metadata = {...metadata, ...decodeLogicalScreenDescriptor(file)};
+	offset = 13; // Start after the Header and Logical Screen Descriptor
+	offset += metadata.hasColorTable ? metadata.globalColorTableSize * 3 : 0; // Skip the Global Color Table
+
+	while (offset < file.length) {
+		let introducer = file.readUInt8(offset);
+		if (introducer === 0x21) //extension
+		{
+			let label = file.readUInt8(offset + 1);
+			if (label === 0xF9) 
+			{//Graphic Control Extension
+				res = decodeGraphicControlExtension(file, offset);	
+				metadata = {...metadata, ...res.metadata};
+				offset = res.offset
+			}
+			else if (label === 0xFE)
+			{//Comment Extension
+				res = decodeCommentExtentions(file, offset);
+				metadata = {...metadata, ...res.metadata};
+				offset = res.offset;	
+			}
+			else if (label === 0x01)
+			{//Plain Text Extension
+				res = decodePlainTextExtension(file, offset);
+				metadata = {...metadata, ...res.metadata};
+				offset = res.offset;
+			}
+			else if (label === 0xFF)
+			{//Application Extension
+				res = decodeApplicationExtension(file, offset);
+				metadata = {...metadata, ...res.metadata};
+				offset = res.offset;
+			}
+		}
+		else if (file.readUInt8(offset) === 0x2c)
+		{// Image descriptor
+			let res = decodeImageDescriptor(file, offset);
+			offset = res.offset;
+			if (metadata.nbImages === undefined)
+				metadata.nbImages = 0;
+			metadata.nbImages++;
+		}
+		else if (file.readUInt8(offset) === 0x3b)
+			break;
+	}
+
+	metadata.duration = metadata.delayTime * metadata.nbImages / 100 + 's';
+	print_metadata(file, metadata);
+}
+
+main = () => {
+	if (process.argc < 3)
+	{
+		console.log("Usage: ./scorpion FILE1 [FILE2 ...]");
+		return
+	}
+	for (let i = 2; i < process.argv.length; i++)
+	{
+        //check if param is a file or a directory
+        if (fs.lstatSync(process.argv[i]).isDirectory())
+        {
+            console.log("Usage: ./scorpion FILE1 [FILE2 ...]");
+            return;
+        }
+		parse_metadata(process.argv[i]);
+	}
+}
+
+main();
