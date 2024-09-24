@@ -46,16 +46,16 @@
     </li>
     <li><a href="#usage-examples">Usage examples</a></li>
     <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#contact">Contact</a></li>
   </ol>
 </details>
 
 <!-- GOAL -->
+
 ## Goal
 
 <div align="center">
   <a>
-	<img src="https://1zootree.weebly.com/uploads/2/4/2/5/24255946/spider-png37_orig.png" alt="arachnida">
+	<img src="assets/spider.webp" alt="arachnida">
   </a>
 </div>
 </br>
@@ -63,63 +63,66 @@
 This cybersecurity project is composed by two differents executables.
 The first one, spider, is a web scrapper that extract and download images (jpeg, png, gif and bpm) from a website, and is able to act recursively on the links found in the website.
 The second one, scorpion, is an ExIF tool that extract metadata from images (jpeg, png, gif and bpm)
-> Both are written using NodeJS and use a minimal amount of external libraries, the logic is mostly homemade.
 
+> Both are written using NodeJS and use a minimal amount of external libraries, the logic is mostly homemade.
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
 <!-- GETTING STARTED -->
-## Getting Started
 
+## Getting Started
 
 ### Prerequisites
 
-- [NodeJS](https://nodejs.org/en/download/)
-
+-   [NodeJS](https://nodejs.org/en/download/)
 
 ### Installation
 
 1. Clone the repo
 
-   ```sh
-   $> git clone https://github.com/Link-Wolf/arachnida.git
-   ```
+    ```sh
+    $> git clone https://github.com/Link-Wolf/arachnida.git
+    ```
 
 2. Launch one of the two executables
 
-	
-   ```sh
-   $> cd arachnida
-   $> ./spider [-r] [-l level] [-p path] url
-   ```
-   > -r : recursive mode
-   > -l : level of recursion
-   > -p : path to save images
-   > url : url to scrap
-   ---
-   ```sh
-   $> cd arachnida
-   $> ./scorpion FILE1 [FILE2 ...]
-   ```
-   > FILE : path to image
+    ```sh
+    $> cd arachnida
+    $> ./spider [-r] [-l level] [-p path] url
+    ```
+
+    > -r : recursive mode
+    > -l : level of recursion
+    > -p : path to save images
+    > url : url to scrap
+
+    ***
+
+    ```sh
+    $> cd arachnida
+    $> ./scorpion FILE1 [FILE2 ...]
+    ```
+
+    > FILE : path to image
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
 <!-- USAGE EXAMPLES -->
+
 ## Usage examples
 
 #### Spider
 
-![spider](https://media.discordapp.net/attachments/907303542438629406/1129005675645775913/image.png?width=1353&height=166)
+![spider](assets/spider_example.png)
 
 #### Scorpion
 
-![scorpion](https://media.discordapp.net/attachments/907303542438629406/1129007322111414372/image.png?width=666&height=821)
+![scorpion](assets/scorpion_example.png)
 
 <p align="right">(<a href="#top">back to top</a>)</p>
 
-
 <!-- CONTRIBUTING -->
+
 ## Contributing
 
 If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
@@ -130,14 +133,5 @@ Don't forget to give the project a star! Thanks again!
 3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
-
-<p align="right">(<a href="#top">back to top</a>)</p>
-
-<!-- CONTACT -->
-## Contact
-
-Mail : xxxxxxx@student.42mulhouse.fr
-
-Project Link: [https://github.com/Link-Wolf/arachnida](https://github.com/Link-Wolf/arachnida)
 
 <p align="right">(<a href="#top">back to top</a>)</p>
